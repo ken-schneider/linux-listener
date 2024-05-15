@@ -73,7 +73,7 @@ func handlePackets(conn *ipv4.RawConn, listenerType string) error {
 			fmt.Printf("Packet: %+v\n\n", packet)
 
 			rawPacket := utils.ReadRawPacket(buf)
-			err := utils.LayerCat(rawPacket)
+			err = utils.LayerCat(rawPacket)
 			if err != nil {
 				fmt.Printf("failed to cat packet: %s", err.Error())
 			}
