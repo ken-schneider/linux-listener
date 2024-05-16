@@ -7,17 +7,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/gopacket/layers"
 	"github.com/ken-schneider/linux-listener/pkg/utils"
 	"golang.org/x/net/ipv4"
 )
 
+type (
+	CanceledError string
+)
+
+const (
+	destHost = "172.253.63.101"
+	destPort = 80
+)
+
 func main() {
-	netaddr, err := net.ResolveIPAddr("ip4", "127.0.0.1")
+	destIP := net.ParseIP(destHost)
+	tcpAddr, err := utils.LocalAddrForTCP4Host(destIP, destPort)
 	if err != nil {
 		panic(err)
 	}
 
-	icmpConn, err := net.ListenPacket("ip4:icmp", netaddr.IP.String())
+	icmpConn, err := net.ListenPacket("ip4:icmp", tcpAddr.IP.String())
 	if err != nil {
 		panic(err)
 	}
@@ -28,7 +39,7 @@ func main() {
 		panic(err)
 	}
 
-	tcpConn, err := net.ListenPacket("ip4:tcp", netaddr.IP.String())
+	tcpConn, err := net.ListenPacket("ip4:tcp", tcpAddr.IP.String())
 	if err != nil {
 		panic(err)
 	}
@@ -40,6 +51,22 @@ func main() {
 	}
 
 	start := time.Now()
+	for i := 1; i <= 30; i++ {
+		flags := byte(0)
+		flags |= utils.SYN
+		tcpHeader, tcpPacket, err := utils.CreateRawTCPPacket(tcpAddr.IP, 12345, destIP, uint16(destPort), i, flags)
+		if err != nil {
+			fmt.Printf("failed to create TCP packet with TTL: %d, error: %s\n", i, err.Error())
+		}
+
+		err = utils.SendPacket(rawTcpConn, tcpHeader, tcpPacket)
+		if err != nil {
+			fmt.Printf("failed to send TCP SYN: %s\n", err.Error())
+		}
+
+		listenAnyPacket(rawIcmpConn, rawTcpConn, 3*time.Second)
+		fmt.Printf("Finished loop for TTL %d\n\n", i)
+	}
 	listenAnyPacket(rawIcmpConn, rawTcpConn, 10*time.Second)
 	fmt.Printf("Duration: %s\n", time.Since(start).String())
 }
@@ -65,12 +92,18 @@ func listenAnyPacket(icmpConn *ipv4.RawConn, tcpConn *ipv4.RawConn, timeout time
 	}()
 	wg.Wait()
 
-	if err1 != nil {
-		fmt.Printf("tcp listener error: %s\n", err1.Error())
+	if err1 != nil && err2 != nil {
+		_, ok1 := err1.(CanceledError)
+		_, ok2 := err2.(CanceledError)
+		if ok1 && ok2 {
+			fmt.Println("Timed out while awaiting repsonse")
+		} else {
+			fmt.Printf("TCP Listener Err: %s\n", err1.Error())
+			fmt.Printf("ICMP Listener Err: %s\n", err2.Error())
+		}
 	}
-	if err2 != nil {
-		fmt.Printf("icmp listener error: %s\n", err2.Error())
-	}
+
+	// if one of them is not an error we should print out some kind of packet
 }
 
 // handlePackets in its current implementation should listen for the first matching
@@ -81,7 +114,7 @@ func handlePackets(ctx context.Context, conn *ipv4.RawConn, listener string) err
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("canceled")
+			return CanceledError("listener canceled")
 		default:
 		}
 		now := time.Now()
@@ -107,5 +140,37 @@ func handlePackets(ctx context.Context, conn *ipv4.RawConn, listener string) err
 			}
 			return nil
 		}
+		if listener == "icmp" {
+			err := parseICMP(header, packet)
+			if err != nil {
+				fmt.Printf("failed to parse ICMP packet: %s\n", err.Error())
+			}
+		}
 	}
+}
+
+func parseICMP(header *ipv4.Header, payload []byte) error {
+	packetBytes, err := utils.MarshalPacket(header, payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal packet: %w", err)
+	}
+
+	packet := utils.ReadRawPacket(packetBytes)
+
+	src, _, icmpType, err := utils.ParseICMPPacket(packet)
+	if err != nil {
+		return fmt.Errorf("failed to parse ICMP packet: %w", err)
+	}
+
+	if icmpType == layers.ICMPv4TypeDestinationUnreachable || icmpType == layers.ICMPv4TypeTimeExceeded {
+		fmt.Printf("Received ICMP reply: %s from %s\n", icmpType.String(), src.String())
+	} else {
+		fmt.Printf("Received other ICMP reply: %s from %s\n", icmpType.String(), src.String())
+	}
+
+	return nil
+}
+
+func (c CanceledError) Error() string {
+	return string(c)
 }
