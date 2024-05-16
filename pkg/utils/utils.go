@@ -87,28 +87,60 @@ func ParseICMPPacket(pkt gopacket.Packet) (net.IP, net.IP, layers.ICMPv4TypeCode
 	var typeCode layers.ICMPv4TypeCode
 
 	if ipLayer := pkt.Layer(layers.LayerTypeIPv4); ipLayer != nil {
-		fmt.Println("This is an IPv4 packet!")
+		//fmt.Println("This is an IPv4 packet!")
 		ip, ok := ipLayer.(*layers.IPv4)
 		if !ok {
 			return net.IP{}, net.IP{}, layers.ICMPv4TypeCode(0), fmt.Errorf("failed to assert IPv4 layer type")
 		}
-		fmt.Printf("IPv4 layer: %+v\n", ip)
+		//fmt.Printf("IPv4 layer: %+v\n", ip)
 
 		src = ip.SrcIP
 		dst = ip.DstIP
 	}
 
 	if icmpLayer := pkt.Layer(layers.LayerTypeICMPv4); icmpLayer != nil {
-		fmt.Println("This is an ICMPv4 packet!")
+		//fmt.Println("This is an ICMPv4 packet!")
 		icmp, ok := icmpLayer.(*layers.ICMPv4)
 		if !ok {
 			return net.IP{}, net.IP{}, layers.ICMPv4TypeCode(0), fmt.Errorf("failed to assert ICMPv4 layer type")
 		}
-		fmt.Printf("ICMPv4 layer: %+v\n", icmp)
+		//fmt.Printf("ICMPv4 layer: %+v\n", icmp)
 		typeCode = icmp.TypeCode
 	}
 
 	return src, dst, typeCode, nil
+}
+
+func ParseTCPPacket(pkt gopacket.Packet) (net.IP, uint16, net.IP, uint16, error) {
+	var src net.IP
+	var srcPort uint16
+	var dst net.IP
+	var dstPort uint16
+
+	if ipLayer := pkt.Layer(layers.LayerTypeIPv4); ipLayer != nil {
+		//fmt.Println("This is an IPv4 packet!")
+		ip, ok := ipLayer.(*layers.IPv4)
+		if !ok {
+			return net.IP{}, 0, net.IP{}, 0, fmt.Errorf("failed to assert IPv4 layer type")
+		}
+		//fmt.Printf("IPv4 layer: %+v\n", ip)
+
+		src = ip.SrcIP
+		dst = ip.DstIP
+	}
+
+	if tcpLayer := pkt.Layer(layers.LayerTypeTCP); tcpLayer != nil {
+		//fmt.Println("This is a TCP packet!")
+		tcp, ok := tcpLayer.(*layers.TCP)
+		if !ok {
+			return net.IP{}, 0, net.IP{}, 0, fmt.Errorf("failed to assert TCP layer type")
+		}
+		//fmt.Printf("TCP layer: %+v\n", tcp)
+		srcPort = uint16(tcp.SrcPort)
+		dstPort = uint16(tcp.DstPort)
+	}
+
+	return src, srcPort, dst, dstPort, nil
 }
 
 // CreateRawTCPPacket creates a TCP packet with the specified parameters

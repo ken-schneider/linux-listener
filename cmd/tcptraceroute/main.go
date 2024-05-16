@@ -44,6 +44,7 @@ func main() {
 		panic(err)
 	}
 	defer tcpConn.Close()
+	fmt.Printf("Listening for TCP on: %s\n", tcpAddr.IP.String()+":"+tcpAddr.AddrPort().String())
 	// RawConn is necessary to set the TTL and ID fields
 	rawTcpConn, err := ipv4.NewRawConn(tcpConn)
 	if err != nil {
@@ -54,26 +55,28 @@ func main() {
 	for i := 1; i <= 30; i++ {
 		flags := byte(0)
 		flags |= utils.SYN
-		tcpHeader, tcpPacket, err := utils.CreateRawTCPPacket(tcpAddr.IP, 12345, destIP, uint16(destPort), i, flags)
+		tcpHeader, tcpPacket, err := utils.CreateRawTCPPacket(tcpAddr.IP, tcpAddr.AddrPort().Port(), destIP, uint16(destPort), i, flags)
 		if err != nil {
 			fmt.Printf("failed to create TCP packet with TTL: %d, error: %s\n", i, err.Error())
 		}
+
+		fmt.Printf("Sending on port: %d\n", tcpAddr.AddrPort().Port())
 
 		err = utils.SendPacket(rawTcpConn, tcpHeader, tcpPacket)
 		if err != nil {
 			fmt.Printf("failed to send TCP SYN: %s\n", err.Error())
 		}
 
-		listenAnyPacket(rawIcmpConn, rawTcpConn, 3*time.Second)
+		listenAnyPacket(rawIcmpConn, rawTcpConn, 2*time.Second, tcpAddr.IP, tcpAddr.AddrPort().Port(), destIP, uint16(destPort))
 		fmt.Printf("Finished loop for TTL %d\n\n", i)
 	}
-	listenAnyPacket(rawIcmpConn, rawTcpConn, 10*time.Second)
+	listenAnyPacket(rawIcmpConn, rawTcpConn, 10*time.Second, tcpAddr.IP, tcpAddr.AddrPort().Port(), destIP, uint16(destPort))
 	fmt.Printf("Duration: %s\n", time.Since(start).String())
 }
 
 // listenAnyPacket should start up a listener that returns at the first received packet or
 // after the timeout
-func listenAnyPacket(icmpConn *ipv4.RawConn, tcpConn *ipv4.RawConn, timeout time.Duration) {
+func listenAnyPacket(icmpConn *ipv4.RawConn, tcpConn *ipv4.RawConn, timeout time.Duration, localIP net.IP, localPort uint16, remoteIP net.IP, remotePort uint16) {
 	var err1 error
 	var err2 error
 	var wg sync.WaitGroup
@@ -83,12 +86,12 @@ func listenAnyPacket(icmpConn *ipv4.RawConn, tcpConn *ipv4.RawConn, timeout time
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		err1 = handlePackets(ctx, tcpConn, "tcp")
+		err1 = handlePackets(ctx, tcpConn, "tcp", localIP, localPort, remoteIP, remotePort)
 	}()
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		err2 = handlePackets(ctx, icmpConn, "icmp")
+		err2 = handlePackets(ctx, icmpConn, "icmp", localIP, localPort, remoteIP, remotePort)
 	}()
 	wg.Wait()
 
@@ -109,7 +112,7 @@ func listenAnyPacket(icmpConn *ipv4.RawConn, tcpConn *ipv4.RawConn, timeout time
 // handlePackets in its current implementation should listen for the first matching
 // packet on the connection and then return. If no packet is received within the
 // timeout, it should return a timeout exceeded error
-func handlePackets(ctx context.Context, conn *ipv4.RawConn, listener string) error {
+func handlePackets(ctx context.Context, conn *ipv4.RawConn, listener string, localIP net.IP, localPort uint16, remoteIP net.IP, remotePort uint16) error {
 	buf := make([]byte, 1024)
 	for {
 		select {
@@ -128,22 +131,16 @@ func handlePackets(ctx context.Context, conn *ipv4.RawConn, listener string) err
 				return err
 			}
 		}
-		if header.TTL == 42 {
-			fmt.Printf("Listener: %+v\n", listener)
-			fmt.Printf("Header: %+v\n", header)
-			fmt.Printf("Packet: %+v\n\n", packet)
-
-			rawPacket := utils.ReadRawPacket(buf)
-			err := utils.LayerCat(rawPacket)
-			if err != nil {
-				fmt.Printf("failed to cat packet: %s", err.Error())
-			}
-			return nil
-		}
 		if listener == "icmp" {
 			err := parseICMP(header, packet)
 			if err != nil {
 				fmt.Printf("failed to parse ICMP packet: %s\n", err.Error())
+			}
+		}
+		if listener == "tcp" {
+			err := parseTCP(header, packet, localIP, localPort, remoteIP, remotePort)
+			if err != nil {
+				fmt.Printf("failed to parse TCP packet: %s\n", err.Error())
 			}
 		}
 	}
@@ -166,6 +163,25 @@ func parseICMP(header *ipv4.Header, payload []byte) error {
 		fmt.Printf("Received ICMP reply: %s from %s\n", icmpType.String(), src.String())
 	} else {
 		fmt.Printf("Received other ICMP reply: %s from %s\n", icmpType.String(), src.String())
+	}
+
+	return nil
+}
+
+func parseTCP(header *ipv4.Header, payload []byte, localIP net.IP, localPort uint16, remoteIP net.IP, remotePort uint16) error {
+	packetBytes, err := utils.MarshalPacket(header, payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal packet: %w", err)
+	}
+
+	packet := utils.ReadRawPacket(packetBytes)
+	source, sourcePort, dest, destPort, err := utils.ParseTCPPacket(packet)
+	if err != nil {
+		return fmt.Errorf("failed to parse TCP packet: %w", err)
+	}
+
+	if source.Equal(remoteIP) && sourcePort == remotePort && dest.Equal(localIP) && destPort == localPort {
+		fmt.Printf("Received TCP Reply from: %s:%d\n", source.String(), sourcePort)
 	}
 
 	return nil
